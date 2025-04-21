@@ -4,3 +4,9 @@ geopandas
 elevation
 shapely
 requests
+trimesh
+numpy
+rasterio
+matplotlib
+mapbox-earcut
+osm2geojson

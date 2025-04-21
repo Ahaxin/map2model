@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Map2Model</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Leaflet CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+
+  <!-- Leaflet Draw -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen flex items-center justify-center px-4">
+  <div class="max-w-xl w-full space-y-6 bg-white p-8 rounded-2xl shadow-xl">
+    <h1 class="text-2xl font-bold text-center text-gray-800">🗺️ Map2Model</h1>
+
+    <form id="mapForm" class="space-y-4">
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Select Area on Map</label>
+        <div id="map" class="w-full h-64 rounded-lg border"></div>
+        <p id="areaSize" class="text-xs text-gray-500 mt-1">Area size: 0 km²</p>
+        <p class="text-xs text-gray-500 mt-1">Drag to select an area (max 1° x 1°).</p>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Bounding Box</label>
+        <input type="text" id="bbox" name="bbox" class="mt-1 w-full px-3 py-2 border rounded-lg bg-gray-100" readonly placeholder="minlon,minlat,maxlon,maxlat" />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700">Place name (for city model)</label>
+        <input type="text" id="place" name="place" class="mt-1 w-full px-3 py-2 border rounded-lg focus:ring focus:ring-blue-200" placeholder="e.g. Shanghai, China" />
+      </div>
+
+      <div class="flex gap-2">
+        <button type="button" onclick="generateOSM()" class="w-1/2 bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600">Generate City</button>
+        <button type="button" onclick="generateTerrain()" class="w-1/2 bg-green-500 text-white py-2 rounded-lg hover:bg-green-600">Generate Terrain</button>
+      </div>
+    </form>
+
+    <div id="result" class="text-center text-sm text-gray-600 min-h-[1.5em]"></div>
+    <div id="spinner" class="flex justify-center hidden mt-2">
+        <svg class="animate-spin h-6 w-6 text-blue-500" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"/>
+          <path class="opacity-75" fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+    </div>
+    <div id="progressBar" class="w-full bg-gray-200 rounded-full h-2.5 mt-2 hidden">
+        <div id="progressFill" class="bg-blue-500 h-2.5 rounded-full w-0 transition-all duration-300 ease-in-out"></div>
+    </div>
+      
+  </div>
+
+  <script>
+    let drawnRectangle;
+    let selectedAreaKm2 = 0;
+
+    const map = L.map("map").setView([31.2, 121.5], 10);  // Default to Shanghai
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const drawControl = new L.Control.Draw({
+      draw: {
+        polygon: false,
+        polyline: false,
+        circle: false,
+        marker: false,
+        circlemarker: false,
+        rectangle: {
+          shapeOptions: { color: '#38bdf8' }
+        }
+      },
+      edit: false
+    });
+    map.addControl(drawControl);
+
+    map.on(L.Draw.Event.CREATED, function (e) {
+      if (drawnRectangle) map.removeLayer(drawnRectangle);
+      drawnRectangle = e.layer;
+
+      const bounds = drawnRectangle.getBounds();
+      const sw = bounds.getSouthWest();
+      const ne = bounds.getNorthEast();
+
+      const minlon = sw.lng.toFixed(6);
+      const minlat = sw.lat.toFixed(6);
+      const maxlon = ne.lng.toFixed(6);
+      const maxlat = ne.lat.toFixed(6);
+
+      if ((maxlon - minlon) > 1.0 || (maxlat - minlat) > 1.0) {
+        alert("Selected area is too large! Please select an area smaller than 1° x 1°.");
+        return;
+      }
+
+      drawnRectangle.addTo(map);
+      document.getElementById("bbox").value = `${minlon},${minlat},${maxlon},${maxlat}`;
+      const areaSize = calculateAreaKm2(minlat, minlon, maxlat, maxlon);
+      document.getElementById("areaSize").textContent = `Area size: ${areaSize.toFixed(2)} km²`;
+      selectedAreaKm2 = calculateAreaKm2(minlat, minlon, maxlat, maxlon);
+      document.getElementById("areaSize").textContent = `Area size: ${selectedAreaKm2.toFixed(2)} km²`;
+
+    });
+
+    async function generateOSM() {
+        const bbox = document.getElementById("bbox").value;
+        const resultDiv = document.getElementById("result");
+
+        if (!bbox) {
+            resultDiv.textContent = "⚠️ Please select an area on the map.";
+            return;
+        }
+
+        resetProgressBar();
+        showSpinner();
+        updateProgress(10);
+        resultDiv.textContent = "📦 Fetching building data...";
+
+        try {
+            const res = await fetch(`/fetch/osm?bbox=${bbox}`);
+            updateProgress(40);
+            const data = await res.json();
+
+            if (!data.file) {
+            hideSpinner();
+            hideProgressBar();
+            resultDiv.textContent = "❌ Failed to fetch OSM data.";
+            return;
+            }
+
+            resultDiv.textContent = "🏗️ Generating 3D city model...";
+            updateProgress(60);
+
+            const modelRes = await fetch("/generate/osm-model", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ geojson_path: data.file, height: 25 })
+            });
+
+            updateProgress(90);
+            const modelData = await modelRes.json();
+
+            hideSpinner();
+            updateProgress(100);
+            setTimeout(hideProgressBar, 500);
+            showResult(modelData.file);
+        } catch (error) {
+            hideSpinner();
+            hideProgressBar();
+            resultDiv.textContent = "❌ Error generating city model.";
+        }
+    }
+
+    async function generateTerrain() {
+        const bbox = document.getElementById("bbox").value;
+        const resultDiv = document.getElementById("result");
+
+        if (!bbox) {
+            resultDiv.textContent = "⚠️ Please select an area.";
+            return;
+        }
+
+        if (selectedAreaKm2 < 1.0) {
+            resultDiv.textContent = "⚠️ Selected area is too small. Minimum is 1 km².";
+            return;
+        }
+        
+        resetProgressBar();
+        showSpinner();
+        updateProgress(10);
+        resultDiv.textContent = "📦 Fetching elevation data...";
+
+        try {
+            const res = await fetch(`/fetch/terrain?bbox=${bbox}`);
+            updateProgress(40);
+            const data = await res.json();
+
+            if (!data.file) {
+            hideSpinner();
+            hideProgressBar();
+            resultDiv.textContent = "❌ Failed to fetch elevation data.";
+            return;
+            }
+
+            resultDiv.textContent = "🏔️ Generating 3D terrain model...";
+            updateProgress(60);
+
+            const modelRes = await fetch("/generate/terrain-model", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tiff_path: data.file, z_scale: 2, skip: 2 })
+            });
+
+            updateProgress(90);
+            const modelData = await modelRes.json();
+
+            hideSpinner();
+            updateProgress(100);
+            setTimeout(hideProgressBar, 500);
+            showResult(modelData.file);
+        } catch (error) {
+            hideSpinner();
+            hideProgressBar();
+            resultDiv.textContent = "❌ Error generating terrain model.";
+        }
+    }
+
+
+    function showResult(filePath) {
+      const resultDiv = document.getElementById("result");
+      if (filePath && filePath.endsWith(".stl")) {
+        const filename = filePath.split("/").pop();
+        resultDiv.innerHTML = `✅ Model ready: <a href="/${filePath}" class="text-blue-600 underline" download>${filename}</a>`;
+      } else {
+        resultDiv.innerHTML = "❌ Failed to generate model.";
+      }
+    }
+
+    function showSpinner() {
+        document.getElementById("spinner").classList.remove("hidden");
+    }
+
+    function hideSpinner() {
+        document.getElementById("spinner").classList.add("hidden");
+    }
+
+    function resetProgressBar() {
+        const bar = document.getElementById("progressBar");
+        const fill = document.getElementById("progressFill");
+        bar.classList.remove("hidden");
+        fill.style.width = "0%";
+    }
+
+    function updateProgress(percent) {
+        const fill = document.getElementById("progressFill");
+        fill.style.width = percent + "%";
+    }
+
+    function hideProgressBar() {
+        document.getElementById("progressBar").classList.add("hidden");
+    }
+    
+    function calculateAreaKm2(minLat, minLon, maxLat, maxLon) {
+        const R = 6371; // Earth radius in km
+        const latDiff = (maxLat - minLat) * Math.PI / 180;
+        const lonDiff = (maxLon - minLon) * Math.PI / 180;
+
+        const a = Math.sin(latDiff/2) * Math.sin(latDiff/2) +
+                    Math.cos(minLat * Math.PI / 180) * Math.cos(maxLat * Math.PI / 180) *
+                    Math.sin(lonDiff/2) * Math.sin(lonDiff/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+
+        const approxSide = R * c; // Diagonal
+        return (maxLat - minLat) * (maxLon - minLon) * 12365; // fast approx
+    }
+
+  </script>
+</body>
+</html>
