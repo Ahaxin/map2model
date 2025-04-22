@@ -32,7 +32,9 @@
 
       <div>
         <label class="block text-sm font-medium text-gray-700">Place name (for city model)</label>
-        <input type="text" id="place" name="place" class="mt-1 w-full px-3 py-2 border rounded-lg focus:ring focus:ring-blue-200" placeholder="e.g. Shanghai, China" />
+        <input type="text" id="placeName" list="placeSuggestions" placeholder="Enter a location">
+        <datalist id="placeSuggestions"></datalist>
+        <button onclick="goToPlace(event)">Go</button>
       </div>
 
       <div class="flex gap-2">
@@ -60,7 +62,7 @@
     let selectedAreaKm2 = 0;
 
     const map = L.map("map").setView([31.2, 121.5], 10);  // Default to Shanghai
-
+    document.getElementById('placeName').addEventListener('input', fetchSuggestions);  
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
@@ -259,6 +261,46 @@
         return (maxLat - minLat) * (maxLon - minLon) * 12365; // fast approx
     }
 
+    function goToPlace(event) {
+        event.preventDefault(); // ✨ Prevents the page reload
+
+        const place = document.getElementById("placeName").value;
+        fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(place)}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log("🔍 Raw Nominatim response:", data);
+
+                if (data.length > 0) {
+                    const lat = parseFloat(data[0].lat);
+                    const lon = parseFloat(data[0].lon);
+                    console.log(`📍 Found location: ${lat}, ${lon}`);
+                    map.setView([lat, lon], 14);
+                } else {
+                    alert("Place not found.");
+                }
+            })
+            .catch(error => {
+                console.error("❌ Geocoding error:", error);
+                alert("Something went wrong.");
+            });
+     }
+     function fetchSuggestions() {
+          const place = document.getElementById('placeName').value;
+          if (place.length < 3) return; // Avoid unnecessary queries
+
+          fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(place)}`)
+              .then(response => response.json())
+              .then(data => {
+                  const datalist = document.getElementById('placeSuggestions');
+                  datalist.innerHTML = ''; // Clear old suggestions
+                  data.forEach(location => {
+                      const option = document.createElement('option');
+                      option.value = location.display_name;
+                      datalist.appendChild(option);
+                  });
+              })
+              .catch(error => console.error('Suggestion fetch error:', error));
+      }
   </script>
 </body>
 </html>
