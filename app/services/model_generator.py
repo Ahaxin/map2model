@@ -7,6 +7,8 @@ from shapely.geometry import Polygon, MultiPolygon
 import rasterio
 from rasterio.enums import Resampling
 from matplotlib import cm
+from scipy.ndimage import gaussian_filter
+import trimesh
 
 
 class ModelGenerator:
@@ -58,19 +60,26 @@ class ModelGenerator:
             print("[-] Error extruding polygon:", e)
             return None
 
-    def generate_3d_model_from_elevation(self, tiff_path, z_scale=1.0, skip=1):
+    def generate_3d_model_from_elevation(self, tiff_path, z_scale=0.0001, skip=1, smooth_sigma=10):
         """
         Converts a GeoTIFF elevation file to a 3D terrain STL.
         z_scale: scales vertical exaggeration
         skip: step size to reduce mesh complexity
+        smooth_sigma: controls level of terrain smoothing
         """
+        # test area 121.517487,38.935378,121.941833,39.080507
         try:
             with rasterio.open(tiff_path) as dataset:
                 elevation = dataset.read(1, resampling=Resampling.bilinear)
                 elevation = np.nan_to_num(elevation)
 
-                # Downsample if needed
-                elevation = elevation[::skip, ::skip]
+                # Downsample to reduce complexity
+                # elevation = elevation[::skip, ::skip]
+
+                # Smooth the terrain to remove spikes
+                elevation = gaussian_filter(elevation, sigma=smooth_sigma)
+                #elevation = np.clip(elevation, np.percentile(elevation, 1), np.percentile(elevation, 99))
+
                 nrows, ncols = elevation.shape
 
                 # Generate vertex grid
@@ -80,7 +89,7 @@ class ModelGenerator:
                 # Flatten arrays for mesh
                 vertices = np.column_stack((x.flatten(), y.flatten(), z.flatten()))
 
-                # Generate faces
+                # Generate triangular faces
                 faces = []
                 for row in range(nrows - 1):
                     for col in range(ncols - 1):
@@ -91,6 +100,7 @@ class ModelGenerator:
                         faces.append([a, c, b])
                         faces.append([b, c, d])
 
+                # Create and export the mesh
                 mesh = trimesh.Trimesh(vertices=vertices, faces=np.array(faces))
                 model_path = os.path.join(self.output_dir, "terrain_model.stl")
                 mesh.export(model_path)
